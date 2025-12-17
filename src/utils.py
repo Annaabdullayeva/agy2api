@@ -5,6 +5,34 @@ from typing import List, Optional
 
 CLI_VERSION = "0.1.5"  # Match current gemini-cli version
 
+# ====================== OAuth Configuration ======================
+
+# OAuth Configuration - 标准模式
+CLIENT_ID = "REDACTED_CLIENT_ID"
+CLIENT_SECRET = "REDACTED_CLIENT_SECRET"
+SCOPES = [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
+
+# Antigravity OAuth Configuration
+ANTIGRAVITY_CLIENT_ID = "REDACTED_CLIENT_ID"
+ANTIGRAVITY_CLIENT_SECRET = "REDACTED_CLIENT_SECRET"
+ANTIGRAVITY_SCOPES = [
+    'https://www.googleapis.com/auth/cloud-platform',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/cclog',
+    'https://www.googleapis.com/auth/experimentsandconfigs'
+]
+
+# 统一的 Token URL（两种模式相同）
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+# 回调服务器配置
+CALLBACK_HOST = "localhost"
+
 # ====================== Antigravity API Configuration ======================
 
 # Antigravity API Host and User-Agent (shared by antigravity_api.py and google_oauth_api.py)
