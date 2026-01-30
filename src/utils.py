@@ -13,7 +13,7 @@ security = HTTPBearer()
 
 GEMINICLI_USER_AGENT = "GeminiCLI/0.1.5 (Windows; AMD64)"
 
-ANTIGRAVITY_USER_AGENT = "antigravity/1.11.3 windows/amd64"
+ANTIGRAVITY_USER_AGENT = "antigravity/1.15.8 (Windows; AMD64)"
 
 # OAuth Configuration - 标准模式
 CLIENT_ID = "REDACTED_CLIENT_ID"
