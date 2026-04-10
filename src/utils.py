@@ -24,7 +24,7 @@ def get_geminicli_user_agent(model: str = "") -> str:
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
-ANTIGRAVITY_USER_AGENT = "antigravity/2.15.8 (Windows; AMD64)"
+ANTIGRAVITY_USER_AGENT = "antigravity/1.22.2 windows/amd64"
 
 # OAuth Configuration - 标准模式
 CLIENT_ID = "REDACTED_CLIENT_ID"
