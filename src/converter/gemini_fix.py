@@ -416,141 +416,22 @@ SUPPORTED_ASPECT_RATIOS = [
 ]
 
 
-def _parse_size_to_image_config(size_str: str) -> Dict[str, str]:
-    """
-    解析用户传入的 size 参数为 Gemini imageConfig 参数
-
-    支持格式: "1024x1536", "1024*1536", "1024X1536"
-
-    Returns:
-        包含 aspectRatio 和/或 imageSize 的字典
-    """
-    import re
-
-    config = {}
-    size_str = size_str.strip()
-
-    match = re.match(r"^(\d+)\s*[xX*×]\s*(\d+)$", size_str)
-    if not match:
-        return config
-
-    width, height = int(match.group(1)), int(match.group(2))
-
-    if width <= 0 or height <= 0:
-        return config
-
-    # 计算最接近的支持宽高比
-    target_ratio = width / height
-    best_ratio = None
-    best_diff = float("inf")
-    for w, h in SUPPORTED_ASPECT_RATIOS:
-        diff = abs(target_ratio - w / h)
-        if diff < best_diff:
-            best_diff = diff
-            best_ratio = f"{w}:{h}"
-    if best_ratio:
-        config["aspectRatio"] = best_ratio
-
-    # 根据最大边长确定 imageSize（使用最接近的档位）
-    max_dim = max(width, height)
-    if max_dim <= 1280:
-        config["imageSize"] = "1K"
-    elif max_dim <= 2560:
-        config["imageSize"] = "2K"
-    else:
-        config["imageSize"] = "4K"
-
-    return config
-
-
-def prepare_image_generation_request(
-    request_body: Dict[str, Any],
-    model: str
-) -> Dict[str, Any]:
-    """
-    图像生成模型请求体后处理
-
-    支持三种方式指定图片参数（优先级从高到低）:
-    1. size 参数: 如 "1024x1536"，自动计算 aspectRatio 和 imageSize
-    2. 模型名后缀: 如 -4k, -2k, -16x9, -1x1
-    3. 默认值: 不设置额外参数
-
-    Args:
-        request_body: 原始请求体
-        model: 模型名称
-
-    Returns:
-        处理后的请求体
-    """
-    request_body = request_body.copy()
-    model_lower = model.lower()
-
-    # 优先使用 size 参数
-    size_str = request_body.pop("size", None)
-    if size_str:
-        image_config = _parse_size_to_image_config(size_str)
-        log.debug(f"[IMAGE] 从 size 参数 '{size_str}' 解析: {image_config}")
-    else:
-        # 从模型名后缀解析
-        image_size = "4K" if "-4k" in model_lower else "2K" if "-2k" in model_lower else None
-
-        aspect_ratio = None
-        for suffix, ratio in [
-            ("-21x9", "21:9"), ("-16x9", "16:9"), ("-9x16", "9:16"),
-            ("-4x3", "4:3"), ("-3x4", "3:4"), ("-1x1", "1:1")
-        ]:
-            if suffix in model_lower:
-                aspect_ratio = ratio
-                break
-
-        image_config = {}
-        if aspect_ratio:
-            image_config["aspectRatio"] = aspect_ratio
-        if image_size:
-            image_config["imageSize"] = image_size
-
-    request_body["model"] = "gemini-3.1-flash-image"  # 统一使用基础模型名
-    request_body["generationConfig"] = {
-        "candidateCount": 1,
-        "imageConfig": image_config
-    }
-
-    # 移除不需要的字段
-    for key in ("systemInstruction", "tools", "toolConfig"):
-        request_body.pop(key, None)
-
-    return request_body
-
-
-# ==================== 模型特性辅助函数 ====================
-
 def get_base_model_name(model_name: str) -> str:
-    """移除模型名称中的后缀,返回基础模型名"""
-    # 按照从长到短的顺序排列，避免短后缀先于长后缀被匹配
+    """移除模型名称中的控制后缀，返回基础模型名。"""
     suffixes = [
-        "-maxthinking", "-nothinking",  # 兼容旧模式
-        "-minimal", "-medium", "-search", "-think",  # 中等长度后缀
-        "-high", "-max", "-low"  # 短后缀
+        "-maxthinking", "-nothinking",
+        "-minimal", "-medium", "-search", "-think",
+        "-high", "-max", "-low",
     ]
     result = model_name
     changed = True
-    # 持续循环直到没有任何后缀可以移除
     while changed:
         changed = False
         for suffix in suffixes:
             if result.endswith(suffix):
                 result = result[:-len(suffix)]
                 changed = True
-                # 不使用 break，继续检查是否还有其他后缀
     return result
-
-
-def get_antigravity_base_model_name(model_name: str) -> str:
-    """Remove Antigravity-only control suffixes while preserving real model suffixes like -low."""
-    result = model_name
-    for suffix in ("-nothinking", "-maxthinking"):
-        result = result.replace(suffix, "")
-    return result.replace("-thinking", "")
 
 
 def clamp_generation_config(generation_config: Dict[str, Any]) -> None:
@@ -696,7 +577,7 @@ async def normalize_gemini_request(
 
     Args:
         request: 原始请求字典
-        mode: 模式 ("geminicli" 或 "antigravity")
+        mode: 保留兼容参数，仅处理 Gemini CLI
 
     Returns:
         规范化后的请求
@@ -707,8 +588,6 @@ async def normalize_gemini_request(
     result = request.copy()
     model = result.get("model", "")
     generation_config = (result.get("generationConfig") or {}).copy()  # 创建副本避免修改原对象
-    tools = result.get("tools")
-    system_instruction = result.get("systemInstruction") or result.get("system_instructions")
     
     # 记录原始请求
     if log.is_debug_enabled():
@@ -717,181 +596,64 @@ async def normalize_gemini_request(
     # 获取配置值
     return_thoughts = await get_return_thoughts_to_frontend()
 
-    # ========== 模式特定处理 ==========
-    if mode == "geminicli":
-        # 1. 思考设置
-        # 优先使用 get_thinking_settings 获取的思考预算和等级
-        thinking_budget, thinking_level = get_thinking_settings(model)
+    # ========== Gemini CLI 处理 ==========
+    # 1. 思考设置
+    # 优先使用 get_thinking_settings 获取的思考预算和等级
+    thinking_budget, thinking_level = get_thinking_settings(model)
 
-        # 其次使用传入的思考预算（如果未从模型名称获取）
-        if thinking_budget is None and thinking_level is None:
-            thinking_budget = generation_config.get("thinkingConfig", {}).get("thinkingBudget")
-            thinking_level = generation_config.get("thinkingConfig", {}).get("thinkingLevel")
+    # 其次使用传入的思考预算（如果未从模型名称获取）
+    if thinking_budget is None and thinking_level is None:
+        thinking_budget = generation_config.get("thinkingConfig", {}).get("thinkingBudget")
+        thinking_level = generation_config.get("thinkingConfig", {}).get("thinkingLevel")
 
-        # 假如 is_thinking_model 为真或者思考预算/等级不为空，设置 thinkingConfig
-        if is_thinking_model(model) or thinking_budget is not None or thinking_level is not None:
-            # 确保 thinkingConfig 存在
-            if "thinkingConfig" not in generation_config:
-                generation_config["thinkingConfig"] = {}
+    # 假如 is_thinking_model 为真或者思考预算/等级不为空，设置 thinkingConfig
+    if is_thinking_model(model) or thinking_budget is not None or thinking_level is not None:
+        # 确保 thinkingConfig 存在
+        if "thinkingConfig" not in generation_config:
+            generation_config["thinkingConfig"] = {}
 
-            thinking_config = generation_config["thinkingConfig"]
+        thinking_config = generation_config["thinkingConfig"]
 
-            # 设置思考预算或等级（互斥）
-            if thinking_budget is not None:
-                thinking_config["thinkingBudget"] = thinking_budget
-                thinking_config.pop("thinkingLevel", None)  # 避免与 thinkingBudget 冲突
-            elif thinking_level is not None:
-                thinking_config["thinkingLevel"] = thinking_level
-                thinking_config.pop("thinkingBudget", None)  # 避免与 thinkingLevel 冲突
+        # 设置思考预算或等级（互斥）
+        if thinking_budget is not None:
+            thinking_config["thinkingBudget"] = thinking_budget
+            thinking_config.pop("thinkingLevel", None)  # 避免与 thinkingBudget 冲突
+        elif thinking_level is not None:
+            thinking_config["thinkingLevel"] = thinking_level
+            thinking_config.pop("thinkingBudget", None)  # 避免与 thinkingLevel 冲突
 
-            # includeThoughts 逻辑:
-            # 1. 如果是 pro 模型，为 return_thoughts
-            # 2. 如果不是 pro 模型，检查是否有思考预算或思考等级
-            base_model = get_base_model_name(model)
-            if "-nothinking" in model:
+        # includeThoughts 逻辑:
+        # 1. 如果是 pro 模型，为 return_thoughts
+        # 2. 如果不是 pro 模型，检查是否有思考预算或思考等级
+        base_model = get_base_model_name(model)
+        if "-nothinking" in model:
+            include_thoughts = False
+        elif "pro" in base_model:
+            include_thoughts = return_thoughts
+        elif "3-flash" in base_model:
+            if thinking_level is None:
                 include_thoughts = False
-            elif "pro" in base_model:
-                include_thoughts = return_thoughts
-            elif "3-flash" in base_model:
-                if thinking_level is None:
-                    include_thoughts = False
-                else:
-                    include_thoughts = return_thoughts
             else:
-                # 非 pro 模型: 有思考预算或等级才包含思考
-                # 注意: 思考预算为 0 时不包含思考
-                if thinking_budget is None or thinking_budget == 0:
-                    include_thoughts = False
-                else:
-                    include_thoughts = return_thoughts
-
-            thinking_config["includeThoughts"] = include_thoughts
-
-        # 2. 搜索模型添加 Google Search
-        if is_search_model(model):
-            result_tools = result.get("tools") or []
-            result["tools"] = result_tools
-            if not any(tool.get("googleSearch") for tool in result_tools if isinstance(tool, dict)):
-                result_tools.append({"googleSearch": {}})
-
-        # 3. 模型名称处理
-        result["model"] = get_base_model_name(model)
-
-    elif mode == "antigravity":
-        
-        '''
-        # 1. 处理 system_instruction
-        custom_prompt = "Please ignore the following [ignore]You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**[/ignore]"
-
-        # 提取原有的 parts（如果存在）
-        existing_parts = []
-        if system_instruction:
-            if isinstance(system_instruction, dict):
-                existing_parts = system_instruction.get("parts", [])
-
-        # custom_prompt 始终放在第一位,原有内容整体后移
-        result["systemInstruction"] = {
-            "parts": [{"text": custom_prompt}] + existing_parts
-        }
-        '''
-
-        no_thinking = "-nothinking" in model
-
-        # 2. 判断图片模型
-        if "image" in model.lower():
-            # 调用图片生成专用处理函数
-            return prepare_image_generation_request(result, model)
+                include_thoughts = return_thoughts
         else:
-            # 3. 思考模型处理
-            if no_thinking:
-                generation_config["thinkingConfig"] = {"includeThoughts": False}
-            elif is_thinking_model(model) or ("thinkingBudget" in generation_config.get("thinkingConfig", {}) and generation_config["thinkingConfig"]["thinkingBudget"] != 0):
-                # 直接设置 thinkingConfig
-                if "thinkingConfig" not in generation_config:
-                    generation_config["thinkingConfig"] = {}
-                
-                thinking_config = generation_config["thinkingConfig"]
-                # 优先使用传入的思考预算，否则使用默认值
-                if "thinkingBudget" not in thinking_config:
-                    thinking_config["thinkingBudget"] = 1024
-                thinking_config.pop("thinkingLevel", None)  # 避免与 thinkingBudget 冲突
-                thinking_config["includeThoughts"] = return_thoughts
-                
-                # 检查最后一个 assistant 消息是否以 thinking 块开始
-                contents = result.get("contents", [])
+            # 非 pro 模型: 有思考预算或等级才包含思考
+            # 注意: 思考预算为 0 时不包含思考
+            if thinking_budget is None or thinking_budget == 0:
+                include_thoughts = False
+            else:
+                include_thoughts = return_thoughts
 
-                if "claude" in model.lower():
-                    # 检测是否有工具调用（MCP场景）
-                    has_tool_calls = any(
-                        isinstance(content, dict) and 
-                        any(
-                            isinstance(part, dict) and ("functionCall" in part or "function_call" in part)
-                            for part in content.get("parts", [])
-                        )
-                        for content in contents
-                    )
-                    
-                    if has_tool_calls:
-                        # MCP 场景：检测到工具调用，移除 thinkingConfig
-                        log.warning(f"[ANTIGRAVITY] 检测到工具调用（MCP场景），移除 thinkingConfig 避免失效")
-                        generation_config.pop("thinkingConfig", None)
-                    else:
-                        # 非 MCP 场景：填充思考块
-                        # log.warning(f"[ANTIGRAVITY] 最后一个 assistant 消息不以 thinking 块开始，自动填充思考块")
-                        
-                        # 找到最后一个 model 角色的 content
-                        for i in range(len(contents) - 1, -1, -1):
-                            content = contents[i]
-                            if isinstance(content, dict) and content.get("role") == "model":
-                                # 在 parts 开头插入思考块（使用官方跳过验证的虚拟签名）
-                                parts = content.get("parts", [])
-                                thinking_part = {
-                                    "text": "...",
-                                    # "thought": True,  # 标记为思考块
-                                    "thoughtSignature": "skip_thought_signature_validator"  # 官方文档推荐的虚拟签名
-                                }
-                                # 如果第一个 part 不是 thinking，则插入
-                                if not parts or not (isinstance(parts[0], dict) and ("thought" in parts[0] or "thoughtSignature" in parts[0])):
-                                    content["parts"] = [thinking_part] + parts
-                                    log.debug(f"[ANTIGRAVITY] 已在最后一个 assistant 消息开头插入思考块（含跳过验证签名）")
-                                break
-                
-            # 移除 Antigravity 控制后缀，保留上游真实模型后缀（如 gemini-3.1-pro-low）
-            model = get_antigravity_base_model_name(model)
+        thinking_config["includeThoughts"] = include_thoughts
 
-            # 4. Claude 模型关键词映射
-            # 使用关键词匹配而不是精确匹配，更灵活地处理各种变体
-            original_model = model
-            if "opus" in model.lower():
-                model = "claude-opus-4-6-thinking"
-            elif "sonnet" in model.lower():
-                model = "claude-sonnet-4-6"
-            elif "haiku" in model.lower():
-                model = "gemini-2.5-flash"
-            elif "claude" in model.lower():
-                # Claude 模型兜底：如果包含 claude 但不是 opus/sonnet/haiku
-                model = "claude-sonnet-4-6"
-            
-            result["model"] = model
-            if original_model != model:
-                log.debug(f"[ANTIGRAVITY] 映射模型: {original_model} -> {model}")
+    # 2. 搜索模型添加 Google Search
+    if is_search_model(model):
+        result_tools = result.get("tools") or []
+        result["tools"] = result_tools
+        if not any(tool.get("googleSearch") for tool in result_tools if isinstance(tool, dict)):
+            result_tools.append({"googleSearch": {}})
 
-        # 5. 模型特殊处理：循环移除末尾的 model 消息，保证以用户消息结尾
-        # 因为该模型不支持预填充
-        if "claude-opus-4-6-thinking" in model.lower() or "claude-sonnet-4-6" in model.lower():
-            contents = result.get("contents", [])
-            removed_count = 0
-            while contents and isinstance(contents[-1], dict) and contents[-1].get("role") == "model":
-                contents.pop()
-                removed_count += 1
-            if removed_count > 0:
-                log.warning(f"[ANTIGRAVITY] {model} 不支持预填充，移除了 {removed_count} 条末尾 model 消息")
-                result["contents"] = contents
-
-        # 6. 移除 antigravity 模式不支持的字段
-        generation_config.pop("presencePenalty", None)
-        generation_config.pop("frequencyPenalty", None)
-        generation_config.pop("stopSequences", None)
+    # 3. 模型名称处理
+    result["model"] = get_base_model_name(model)
 
     # ========== 公共处理 ==========
 
