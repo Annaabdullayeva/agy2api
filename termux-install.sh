@@ -1,169 +1,167 @@
-#!/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
+# termux-install.sh — 在 Termux 上原生部署 agy2api（无 proot、无 glibc 容器）
+#
+# 用法:
+#   bash termux-install.sh                 # 安装到 ~/agy2api
+#   bash termux-install.sh --dir ~/x       # 安装到指定目录
+#   bash termux-install.sh --skip-deps     # 跳过依赖安装（已装好时）
+#
+# 设计要点（都是踩过的坑）:
+#   * pydantic-core 没有 android wheel，必须用 rust 从源码编译；
+#     Termux 主源的 rust 1.67 太旧，需要 tur-repo 的 1.100
+#   * 编译时 maturin 需要 ANDROID_API_LEVEL
+#   * uv 自建的 wheel 会标成 linux_aarch64，与 Termux 的 android_* 标签不兼容，
+#     因此这里用 pip 而不是 uv 安装依赖
+set -euo pipefail
 
-# 避免交互式提示
-export DEBIAN_FRONTEND=noninteractive
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
+SVDIR="${SVDIR:-$PREFIX/var/service}"
+LOG_DIR="${LOG_DIR:-$PREFIX/var/log/sv/agy2api}"
+SERVICE="agy2api"
+REPO_URL="https://github.com/Annaabdullayeva/agy2api.git"
+DEFAULT_DIR="$HOME_DIR/agy2api"
+MIN_RUST="1.80"
 
-if [ "$(whoami)" = "root" ]; then
-    echo "检测到root用户，正在退出..."
-    exit
-fi
+TARGET_DIR=""
+SKIP_DEPS=0
 
-echo "检查Termux镜像源配置..."
-
-# 检查当前镜像源是否已经是Cloudflare镜像
-target_mirror="https://packages-cf.termux.dev/apt/termux-main"
-fallback_mirror="https://packages.termux.dev/apt/termux-main"
-if [ -f "$PREFIX/etc/apt/sources.list" ] && grep -q "$target_mirror" "$PREFIX/etc/apt/sources.list"; then
-    echo "✅ 镜像源已经配置为Cloudflare镜像，跳过修改"
-else
-    echo "正在设置Termux镜像为Cloudflare镜像..."
-    
-    # 备份原始sources.list文件
-    if [ -f "$PREFIX/etc/apt/sources.list" ]; then
-        echo "备份原始sources.list文件..."
-        cp "$PREFIX/etc/apt/sources.list" "$PREFIX/etc/apt/sources.list.backup.$(date +%s)"
-    fi
-    
-    # 写入新的镜像源
-    echo "写入新的镜像源配置..."
-    cat > "$PREFIX/etc/apt/sources.list" << 'EOF'
-# Cloudflare镜像源
-deb https://packages-cf.termux.dev/apt/termux-main stable main
-EOF
-    
-    echo "✅ 镜像源已更新为: $target_mirror"
-fi
-
-ensure_dpkg_ready() {
-    echo "检查并修复 dpkg/apt 状态..."
-    # 等待可能存在的 apt/dpkg 进程结束
-    if pgrep -f "apt|dpkg" >/dev/null 2>&1; then
-        echo "检测到 apt/dpkg 正在运行，等待其结束..."
-        while pgrep -f "apt|dpkg" >/dev/null 2>&1; do sleep 1; done
-    fi
-    # 清理可能残留的锁（若无进程）
-    for f in "$PREFIX/var/lib/dpkg/lock" \
-             "$PREFIX/var/lib/apt/lists/lock" \
-             "$PREFIX/var/cache/apt/archives/lock"; do
-        [ -e "$f" ] && rm -f "$f"
-    done
-    # 尝试继续未完成的配置
-    dpkg --configure -a || true
+usage() {
+  sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-# 更新包列表并检查错误
-echo "正在更新包列表..."
-ensure_dpkg_ready
-apt_output=$(apt update 2>&1)
-if [ $? -ne 0 ]; then
-    if echo "$apt_output" | grep -qi "is not signed"; then
-        echo "⚠️ 检测到仓库未签名，尝试切换到官方镜像并修复 keyring..."
-        # 切换到官方镜像
-        sed -i "s#${target_mirror}#${fallback_mirror}#g" "$PREFIX/etc/apt/sources.list" || true
-        # 清理列表与锁
-        rm -rf "$PREFIX/var/lib/apt/lists/"* || true
-        rm -f "$PREFIX/var/lib/dpkg/lock" "$PREFIX/var/lib/apt/lists/lock" "$PREFIX/var/cache/apt/archives/lock" || true
-        # 重新安装 termux-keyring（若已安装则强制重装）
-        apt-get install --reinstall -y termux-keyring || true
-        # 再次更新
-        ensure_dpkg_ready
-        apt update
-    else
-        echo "apt update 失败，错误信息："
-        echo "$apt_output" | head -20
-        exit 1
-    fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dir)        TARGET_DIR="${2:-}"; shift 2 ;;
+    --skip-deps)  SKIP_DEPS=1; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    *) echo "未知参数: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+TARGET_DIR="${TARGET_DIR:-$DEFAULT_DIR}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+say()  { printf '\033[1;32m[agy2api]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[agy2api]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[agy2api]\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ -n "${PREFIX:-}" ] && [ -d "$PREFIX" ] || die "这看起来不是 Termux 环境（缺少 \$PREFIX）"
+
+# ---------------------------------------------------------------- 1. 依赖
+if [ "$SKIP_DEPS" -eq 0 ]; then
+  if ! grep -qs 'tur-packages' "$PREFIX/etc/apt/sources.list.d/tur.list"; then
+    say "启用 tur-repo（提供 python3.12 与新版 rust）"
+    pkg install -y tur-repo || die "无法安装 tur-repo，请手动执行: pkg install tur-repo"
+    pkg update -y || warn "pkg update 失败，继续尝试安装"
+  fi
+
+  say "安装依赖: python3.12 rust clang git nodejs-lts uv"
+  pkg install -y python3.12 rust clang git nodejs-lts uv
+fi
+
+PY="$PREFIX/bin/python3.12"
+RUSTC="$PREFIX/bin/rustc"
+[ -x "$PY" ] || die "缺少 python3.12（预期路径 $PY）"
+[ -x "$RUSTC" ] || die "缺少 rustc"
+
+rust_ver="$("$RUSTC" --version | awk '{print $2}')"
+if [ "$(printf '%s\n%s\n' "$MIN_RUST" "$rust_ver" | sort -V | head -1)" != "$MIN_RUST" ]; then
+  die "rust $rust_ver 太旧，pydantic-core 需要 >= $MIN_RUST（请确认 tur-repo 已生效）"
+fi
+say "Python: $("$PY" -V 2>&1) / Rust: $rust_ver"
+
+# ---------------------------------------------------------------- 2. 部署
+if [ -f "$TARGET_DIR/.env" ]; then
+  die "$TARGET_DIR 已存在 .env，拒绝覆盖；换个目录请用 --dir"
+fi
+
+mkdir -p "$TARGET_DIR"
+if [ "$SCRIPT_DIR" = "$TARGET_DIR" ] || [ -f "$SCRIPT_DIR/web.py" ]; then
+  if [ "$SCRIPT_DIR" != "$TARGET_DIR" ]; then
+    say "从当前仓库复制到 $TARGET_DIR"
+    tar -C "$SCRIPT_DIR" --exclude=.git --exclude=.venv --exclude=.env -cf - . \
+      | tar -C "$TARGET_DIR" -xf -
+  fi
 else
-    echo "$apt_output"
+  say "克隆 $REPO_URL"
+  git clone --depth 1 "$REPO_URL" "$TARGET_DIR"
 fi
+cd "$TARGET_DIR"
+[ -f web.py ] || die "$TARGET_DIR 下没有 web.py，仓库不完整"
 
-echo "✅ Termux镜像设置完成！"
-echo "📁 原始配置已备份到: $PREFIX/etc/apt/sources.list.backup.*"
-echo "🔄 如需恢复原始镜像，可以运行:"
-echo "   cp \$PREFIX/etc/apt/sources.list.backup.* \$PREFIX/etc/apt/sources.list && apt update"
+say "创建虚拟环境并安装依赖（首次会编译 pydantic-core，约 5–15 分钟）"
+"$PY" -m venv .venv
+.venv/bin/pip install -U pip
+ANDROID_API_LEVEL=24 .venv/bin/pip install --no-cache-dir -r requirements.txt
 
-# 检查是否需要更新包管理器和安装软件
-need_update=false
-packages_to_install=""
+say "生成 .env"
+API_PW="$("$PY" -c 'import secrets;print(secrets.token_hex(16))')"
+PANEL_PW="$("$PY" -c 'import secrets;print(secrets.token_hex(16))')"
+cat > .env <<EOF
+HOST=127.0.0.1
+PORT=7861
+API_PASSWORD=$API_PW
+PANEL_PASSWORD=$PANEL_PW
+CREDENTIALS_DIR=./creds
+PROXY=
+RETRY_429_ENABLED=true
+RETRY_429_MAX_RETRIES=3
+RETRY_429_INTERVAL=8
 
-# 检查 uv 是否已安装
-if ! command -v uv &> /dev/null; then
-    need_update=true
-    packages_to_install="$packages_to_install uv"
-fi
+# 凭据（用户自备；留空则 OAuth 不可用）
+# ANTIGRAVITY_CLIENT_ID=你的 client_id
+# ANTIGRAVITY_CLIENT_SECRET=你的 client_secret
+EOF
+chmod 600 .env
 
-# 检查 python 是否已安装
-if ! command -v python &> /dev/null; then
-    need_update=true
-    packages_to_install="$packages_to_install python"
-fi
+cat > "$HOME_DIR/agy2api-credentials.txt" <<EOF
+面板地址: http://127.0.0.1:7861
+PANEL_PASSWORD=$PANEL_PW
+API_PASSWORD=$API_PW
+EOF
+chmod 600 "$HOME_DIR/agy2api-credentials.txt"
 
-# 检查 nodejs 是否已安装
-if ! command -v node &> /dev/null; then
-    need_update=true
-    packages_to_install="$packages_to_install nodejs"
-fi
+# ---------------------------------------------------------------- 3. 服务与命令
+mkdir -p "$HOME_DIR/.local/bin"
+install -m 755 "$TARGET_DIR/termux-agyapi.sh" "$HOME_DIR/.local/bin/agyapi"
+say "已安装快捷命令: ~/.local/bin/agyapi"
 
-# 检查 git 是否已安装
-if ! command -v git &> /dev/null; then
-    need_update=true
-    packages_to_install="$packages_to_install git"
-fi
-
-# 如果需要安装软件，则更新包管理器并安装
-if [ "$need_update" = true ]; then
-    echo "正在更新包管理器..."
-    ensure_dpkg_ready
-    echo "正在安装缺失的软件包: $packages_to_install"
-    pkg install $packages_to_install -y
+if [ -d "$SVDIR/$SERVICE" ]; then
+  warn "检测到已有 $SVDIR/$SERVICE，跳过服务注册（避免覆盖正在运行的实例）"
 else
-    echo "所需软件包已全部安装，跳过更新和安装步骤"
+  mkdir -p "$SVDIR/$SERVICE/log" "$LOG_DIR"
+  cat > "$SVDIR/$SERVICE/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+export HOME="$HOME_DIR"
+export PREFIX="$PREFIX"
+export PATH="$HOME_DIR/.local/bin:$PREFIX/bin:\$PATH"
+export ANDROID_API_LEVEL=24
+cd "$TARGET_DIR" || exit 1
+set -a; . ./.env; set +a
+exec 2>&1
+exec ./.venv/bin/python web.py
+EOF
+  cat > "$SVDIR/$SERVICE/log/run" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+exec svlogd -tt /data/data/com.termux/files/usr/var/log/sv/agy2api
+EOF
+  chmod 755 "$SVDIR/$SERVICE/run" "$SVDIR/$SERVICE/log/run"
+  chmod 700 "$SVDIR/$SERVICE" "$SVDIR/$SERVICE/log" "$LOG_DIR"
+  : > "$SVDIR/$SERVICE/down"   # 不自启，由 agyapi 手动拉起
+  say "已注册 runit 服务: $SERVICE（默认不自启）"
 fi
 
-# 检查 pm2 是否已安装
-if ! command -v pm2 &> /dev/null; then
-    echo "正在安装 pm2..."
-    npm install pm2 -g
-else
-    echo "pm2 已安装，跳过安装"
-fi
+say "安装完成"
+cat <<EOF
 
-# 项目目录处理逻辑
-if [ -f "./web.py" ]; then
-    # Already in target directory; skip clone and cd
-    echo "已在目标目录中，跳过克隆操作"
-elif [ -f "./agy2api/web.py" ]; then
-    echo "进入已存在的 agy2api 目录"
-    cd ./agy2api
-else
-    echo "克隆项目仓库..."
-    git clone https://github.com/su-kaka/agy2api.git
-    cd ./agy2api
-fi
+  目录      $TARGET_DIR
+  面板      http://127.0.0.1:7861
+  口令      $HOME_DIR/agy2api-credentials.txt
+  启动      agyapi start
+  状态      agyapi status
+  停止      agyapi stop
 
-echo "强制同步项目代码，忽略本地修改..."
-git fetch --all
-git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
-
-# 只在不存在时创建
-if [ ! -d ".venv" ]; then
-    echo "创建虚拟环境..."
-    PYTHON_VERSION=$(python -V 2>&1 | grep -oP '\d+\.\d+' | head -1)
-    if [ -n "$PYTHON_VERSION" ]; then
-        echo "检测到 Python $PYTHON_VERSION，固定版本..."
-        uv python pin "$PYTHON_VERSION"
-    fi
-    rm pyproject.toml
-    uv init
-    uv venv
-else
-    echo "虚拟环境已存在，跳过创建"
-fi
-
-echo "安装 Python 依赖..."
-uv add -r requirements.txt
-
-echo "激活虚拟环境并启动服务..."
-source .venv/bin/activate
-pm2 start .venv/bin/python --name web -- web.py
-cd ..
+  若尚未填写凭据，请编辑 $TARGET_DIR/.env 中的
+  ANTIGRAVITY_CLIENT_ID / ANTIGRAVITY_CLIENT_SECRET，然后 agyapi restart。
+EOF

@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 
 import httpx
@@ -53,8 +54,10 @@ ANTIGRAVITY_USER_AGENT = f"antigravity/cli/{ANTIGRAVITY_CLI_VERSION} {ANTIGRAVIT
 log.info(f"当前 Antigravity CLI 版本: {ANTIGRAVITY_CLI_VERSION}")
 
 # Antigravity OAuth Configuration
-ANTIGRAVITY_CLIENT_ID = "REDACTED_CLIENT_ID"
-ANTIGRAVITY_CLIENT_SECRET = "REDACTED_CLIENT_SECRET"
+# 本仓库不含任何真实凭据：从环境变量读取（.env 会被自动加载）。
+# 使用前请自行提供 Antigravity CLI 的 OAuth client id / secret。
+ANTIGRAVITY_CLIENT_ID = os.getenv("ANTIGRAVITY_CLIENT_ID", "REDACTED_CLIENT_ID")
+ANTIGRAVITY_CLIENT_SECRET = os.getenv("ANTIGRAVITY_CLIENT_SECRET", "REDACTED_CLIENT_SECRET")
 ANTIGRAVITY_SCOPES = [
     'https://www.googleapis.com/auth/cloud-platform',
     'https://www.googleapis.com/auth/userinfo.email',

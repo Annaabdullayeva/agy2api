@@ -41,24 +41,41 @@
 
 ## 安装指南
 
-### Termux 环境
+### Termux 环境（原生，无需 proot）
+
+> 首次安装会从源码编译 pydantic-core，约 5–15 分钟。
 
 **初始安装**
 ```bash
-curl -o termux-install.sh "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/termux-install.sh" && chmod +x termux-install.sh && ./termux-install.sh
+git clone https://github.com/Annaabdullayeva/agy2api.git
+cd agy2api
+bash termux-install.sh
 ```
 
-**重启服务**
+安装完成后：
+
 ```bash
-cd agy2api
-bash termux-start.sh
+agyapi start      # 启动并等待面板就绪
+agyapi status     # 服务状态 / HTTP / 模型数
+agyapi restart    # 重启
+agyapi stop       # 停止
+agyapi logs       # 最近 30 行日志
 ```
+
+前台调试用 `bash termux-start.sh`。
+
+**Termux 已知问题**
+
+- **必须启用 tur-repo**：主源的 `rust` 为 1.67，编译 pydantic-core 会失败；`tur-repo` 提供 `python3.12` 与 `rust 1.100`。安装脚本会自动添加。
+- **编译需要 `ANDROID_API_LEVEL=24`**：否则 maturin 报 `Failed to determine Android API level`。脚本已设置。
+- **不要用 `uv` 安装依赖**：uv 自建的 wheel 标签是 `linux_aarch64`，与 Termux 的 `android_*` 不兼容，会报 `not a supported wheel`。脚本改用 pip。
+- **凭据需自备**：在 `.env` 填写 `ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET`，本仓库不附带任何真实值。
 
 ### Windows 环境
 
 **初始安装**
 ```powershell
-iex (iwr "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/install.ps1" -UseBasicParsing).Content
+iex (iwr "https://raw.githubusercontent.com/Annaabdullayeva/agy2api/refs/heads/master/install.ps1" -UseBasicParsing).Content
 ```
 
 **重启服务**
@@ -68,7 +85,7 @@ iex (iwr "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/in
 
 **初始安装**
 ```bash
-curl -o install.sh "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/install.sh" && chmod +x install.sh && ./install.sh
+curl -o install.sh "https://raw.githubusercontent.com/Annaabdullayeva/agy2api/refs/heads/master/install.sh" && chmod +x install.sh && ./install.sh
 ```
 
 **重启服务**
@@ -81,7 +98,7 @@ bash start.sh
 
 **初始安装**
 ```bash
-curl -o darwin-install.sh "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/darwin-install.sh" && chmod +x darwin-install.sh && ./darwin-install.sh
+curl -o darwin-install.sh "https://raw.githubusercontent.com/Annaabdullayeva/agy2api/refs/heads/master/darwin-install.sh" && chmod +x darwin-install.sh && ./darwin-install.sh
 ```
 
 **重启服务**
