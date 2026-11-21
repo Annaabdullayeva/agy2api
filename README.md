@@ -7,6 +7,24 @@
 >
 > 许可：[CNC-1.0](LICENSE)（仅限非商业使用）
 
+
+### 归档说明
+
+本仓库用于归档，不发布 Docker 镜像、不运行 CI，`.github/workflows/` 已移除。
+
+仓库包含两条**互不包含**的历史线（共同祖先 `86b82ee`）：
+
+| 分支 | 来源 | 最新提交 | 提交数 | 说明 |
+|---|---|---|---|---|
+| `master` | su-kaka/agy2api → GitCode 镜像 | `b4d9ea3` · 2026-11-07 | 1520 | 原作者最后版本 |
+| `upstream-stain-2026-11-19` | STA1N156/gcli2api | `f2865a2` · 2026-11-19 | 1523 | 另一条延续线，含 `revert: restore pre-package Python backend` |
+
+两条线各自独有 253 / 256 个提交，**不是超集关系**，因此分别保留，未做合并。
+
+标签：`snapshot-2026-11-07`（master 线上一点）、`snapshot-2026-11-19`（另一条线）。
+
+两条线的历史均经过 `git filter-repo` 重写，移除了原项目中的 Google OAuth 凭据与 Gemini API Key（详见上文），因此**提交哈希与原仓库不同**。
+
 ---
 
 # AGY2API
