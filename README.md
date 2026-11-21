@@ -1,3 +1,14 @@
+> **关于本仓库**
+>
+> 本仓库是 [su-kaka/agy2api](https://github.com/su-kaka/agy2api) 的镜像。原项目已被作者删除。
+>
+> **本镜像已去除原项目历史中提交过的 Google OAuth 凭据与 API Key**（client ID / client secret / Gemini API key），
+> 代码中相关常量为 `REDACTED_*` 占位符，直接运行将无法完成 OAuth，需要自行填入你从 Antigravity CLI 中取得的凭据。
+>
+> 许可：[CNC-1.0](LICENSE)（仅限非商业使用）
+
+---
+
 # AGY2API
 
 **将 Google Antigravity 转换为 OpenAI、Gemini 和 Claude API 兼容接口**
