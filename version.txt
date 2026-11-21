@@ -1,4 +1,4 @@
-full_hash=d61bcf8e82f8d6abb92fa1f7f471fbb6dcda2707
-short_hash=d61bcf8
-message=Update creds.py
-date=2026-11-07 14:23:30 +0800
+full_hash=7055f2c9250dcf17b7b3caeb66332e32cdb9ce5d
+short_hash=7055f2c
+message=docs: 标注本镜像已去除原项目凭据
+date=2026-11-21 13:34:15 +0800
